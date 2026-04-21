@@ -2408,6 +2408,21 @@ class _DogDetailsPageState extends State<DogDetailsPage> {
                         subtitle: Text(
                           '${roleLabel(n.roleKey)} • Generazione ${n.generation} • ${n.sex}',
                         ),
+                        trailing: n.code.isNotEmpty
+                            ? const Icon(Icons.open_in_new, size: 18)
+                            : null,
+                        onTap: n.code.isEmpty
+                            ? null
+                            : () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => EnciPortalPage(
+                                      roi: n.code,
+                                      microchip: '',
+                                      importMode: false,
+                                    ),
+                                  ),
+                                ),
                       ),
                     ),
                   ),
@@ -2664,7 +2679,8 @@ class _EnciPortalPageState extends State<EnciPortalPage> {
     (function() {
       function txt(el, selector) {
         const n = el.querySelector(selector);
-        return n ? n.innerText.trim() : '';
+        if (!n) return '';
+        return (n.textContent || n.innerText || '').trim();
       }
 
       function roleFromNumber(num) {
@@ -2677,21 +2693,25 @@ class _EnciPortalPageState extends State<EnciPortalPage> {
         return 'g' + (num - 6);
       }
 
+      function extractFromElement(el) {
+        const code = txt(el, '.codice') || txt(el, '[class*="codice"]') || '';
+        const name = txt(el, '.nome') || txt(el, '[class*="nome"]') || '';
+        return { code, name };
+      }
+
       const result = [];
       const debug = {
         detailFound: false,
         pedigreeFound: false,
         rowCount: 0,
         cellCount: 0,
+        strategy: '',
+        bodySnippet: '',
       };
 
-      const detailRoot =
-        document.querySelector('#Dettaglio') ||
-        document.querySelector('.print-ana');
-
-      if (detailRoot) {
-        debug.detailFound = true;
-      }
+      // --- Self node ---
+      const detailRoot = document.querySelector('#Dettaglio') || document.querySelector('.print-ana');
+      if (detailRoot) debug.detailFound = true;
 
       const selfNode =
         document.querySelector('#Dettaglio .nome .pull-left') ||
@@ -2701,13 +2721,12 @@ class _EnciPortalPageState extends State<EnciPortalPage> {
       const maleNode =
         document.querySelector('#Dettaglio .sesso.mars') ||
         document.querySelector('.print-ana .sesso.mars');
-
       const femaleNode =
         document.querySelector('#Dettaglio .sesso.venus') ||
         document.querySelector('.print-ana .sesso.venus');
 
       if (selfNode) {
-        const text = selfNode.innerText.trim();
+        const text = (selfNode.textContent || selfNode.innerText || '').trim();
         const parts = text.split(' - ');
         result.push({
           roleKey: 'self',
@@ -2717,63 +2736,94 @@ class _EnciPortalPageState extends State<EnciPortalPage> {
         });
       }
 
+      // --- Strategy 1: named pedigree container ---
       const pedigreeRoot =
         document.querySelector('#PedigreeCard') ||
         document.querySelector('.card.pedigree') ||
-        document.querySelector('.pedigree');
+        document.querySelector('.pedigree') ||
+        document.querySelector('[id*="Pedigree"]') ||
+        document.querySelector('[id*="pedigree"]') ||
+        document.querySelector('[class*="pedigree"]');
 
       if (pedigreeRoot) {
         debug.pedigreeFound = true;
+        debug.strategy = 's1';
+        const rows = pedigreeRoot.querySelectorAll('.row');
+        debug.rowCount = rows.length;
+        debug.cellCount = pedigreeRoot.querySelectorAll('.cella').length;
+        rows.forEach((row) => {
+          const cell = row.querySelector('.cella');
+          if (!cell) return;
+          let pedigreeClass = null;
+          for (const cls of Array.from(row.classList)) {
+            if (/^[pm]\d{2,}$/.test(cls)) { pedigreeClass = cls; break; }
+          }
+          if (!pedigreeClass) return;
+          const num = parseInt(pedigreeClass.substring(1), 10);
+          if (!num || num < 1) return;
+          const sex = pedigreeClass.startsWith('p') ? 'M' : 'F';
+          const { code, name } = extractFromElement(cell);
+          if (!code && !name) return;
+          result.push({ roleKey: roleFromNumber(num), code, name, sex });
+        });
       }
 
-      const pedigreeRows = pedigreeRoot
-        ? pedigreeRoot.querySelectorAll('.row')
-        : [];
-
-      const pedigreeCells = pedigreeRoot
-        ? pedigreeRoot.querySelectorAll('.cella')
-        : [];
-
-      debug.rowCount = pedigreeRows.length;
-      debug.cellCount = pedigreeCells.length;
-
-      pedigreeRows.forEach((row) => {
-        const cell = row.querySelector('.cella');
-        if (!cell) return;
-
-        const classList = Array.from(row.classList);
-        let pedigreeClass = null;
-
-        for (const cls of classList) {
-          if (/^[pm]\d{2}$/.test(cls)) {
-            pedigreeClass = cls;
-            break;
+      // --- Strategy 2: .cella elements anywhere in DOM ---
+      if (result.filter(r => r.roleKey !== 'self').length === 0) {
+        debug.strategy += '+s2';
+        const allCells = document.querySelectorAll('.cella');
+        debug.cellCount = allCells.length;
+        allCells.forEach((cell) => {
+          let el = cell.parentElement;
+          let pedigreeClass = null;
+          while (el && el !== document.body) {
+            for (const cls of Array.from(el.classList)) {
+              if (/^[pm]\d{2,}$/.test(cls)) { pedigreeClass = cls; break; }
+            }
+            if (pedigreeClass) break;
+            el = el.parentElement;
           }
-        }
-
-        if (!pedigreeClass) return;
-
-        const num = parseInt(pedigreeClass.substring(1), 10);
-        if (!num || num < 1) return;
-
-        const sex = pedigreeClass.startsWith('p') ? 'M' : 'F';
-        const code = txt(cell, '.codice');
-        const name = txt(cell, '.nome');
-
-        if (!code && !name) return;
-
-        result.push({
-          roleKey: roleFromNumber(num),
-          code: code,
-          name: name,
-          sex: sex
+          if (!pedigreeClass) return;
+          const num = parseInt(pedigreeClass.substring(1), 10);
+          if (!num || num < 1) return;
+          const sex = pedigreeClass.startsWith('p') ? 'M' : 'F';
+          const { code, name } = extractFromElement(cell);
+          if (!code && !name) return;
+          const rk = roleFromNumber(num);
+          if (!result.some(r => r.roleKey === rk)) {
+            result.push({ roleKey: rk, code, name, sex });
+          }
         });
-      });
+      }
 
-      return JSON.stringify({
-        debug: debug,
-        items: result
-      });
+      // --- Strategy 3: any element with [pm]XX class anywhere ---
+      if (result.filter(r => r.roleKey !== 'self').length === 0) {
+        debug.strategy += '+s3';
+        document.querySelectorAll('[class]').forEach((el) => {
+          for (const cls of Array.from(el.classList)) {
+            if (/^[pm]\d{2,}$/.test(cls)) {
+              const num = parseInt(cls.substring(1), 10);
+              if (!num || num < 1) return;
+              const sex = cls.startsWith('p') ? 'M' : 'F';
+              const { code, name } = extractFromElement(el);
+              if (!code && !name) return;
+              const rk = roleFromNumber(num);
+              if (!result.some(r => r.roleKey === rk)) {
+                result.push({ roleKey: rk, code, name, sex });
+              }
+              break;
+            }
+          }
+        });
+      }
+
+      // --- Debug: body snippet for diagnosis when nothing found ---
+      if (result.filter(r => r.roleKey !== 'self').length === 0) {
+        const body = document.body ? document.body.innerHTML : '';
+        debug.bodySnippet = body.substring(0, 800);
+      }
+
+      return JSON.stringify({ debug, items: result });
     })();
   """);
 
@@ -2792,10 +2842,18 @@ class _EnciPortalPageState extends State<EnciPortalPage> {
   if (!mounted) return;
 
   if (items.isEmpty) {
+    final snippet = debug['bodySnippet']?.toString() ?? '';
+    debugPrint('ENCI scraper debug: $debug');
+    debugPrint('ENCI body snippet: $snippet');
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
+        duration: const Duration(seconds: 6),
         content: Text(
-          'Nessun dato trovato. detail=${debug['detailFound']}, pedigree=${debug['pedigreeFound']}, righe=${debug['rowCount']}, celle=${debug['cellCount']}',
+          'Nessun dato trovato. '
+          'detail=${debug['detailFound']}, '
+          'pedigree=${debug['pedigreeFound']}, '
+          'celle=${debug['cellCount']}, '
+          'strategia=${debug['strategy']}',
         ),
       ),
     );
