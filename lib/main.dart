@@ -2677,12 +2677,6 @@ class _EnciPortalPageState extends State<EnciPortalPage> {
   Future<void> importVisiblePedigree() async {
   final raw = await controller.runJavaScriptReturningResult(r"""
     (function() {
-      function txt(el, selector) {
-        const n = el.querySelector(selector);
-        if (!n) return '';
-        return (n.textContent || n.innerText || '').trim();
-      }
-
       function roleFromNumber(num) {
         if (num === 1) return 'sire';
         if (num === 2) return 'dam';
@@ -2693,31 +2687,20 @@ class _EnciPortalPageState extends State<EnciPortalPage> {
         return 'g' + (num - 6);
       }
 
-      function extractFromElement(el) {
-        const code = txt(el, '.codice') || txt(el, '[class*="codice"]') || '';
-        const name = txt(el, '.nome') || txt(el, '[class*="nome"]') || '';
-        return { code, name };
+      function tc(el, selector) {
+        const n = el ? el.querySelector(selector) : null;
+        if (!n) return '';
+        return (n.textContent || n.innerText || '').trim();
       }
 
       const result = [];
-      const debug = {
-        detailFound: false,
-        pedigreeFound: false,
-        rowCount: 0,
-        cellCount: 0,
-        strategy: '',
-        bodySnippet: '',
-      };
+      const debug = { strategy: '', error: '' };
 
-      // --- Self node ---
-      const detailRoot = document.querySelector('#Dettaglio') || document.querySelector('.print-ana');
-      if (detailRoot) debug.detailFound = true;
-
+      // --- Self node (always from DOM) ---
       const selfNode =
         document.querySelector('#Dettaglio .nome .pull-left') ||
         document.querySelector('.print-ana .nome .pull-left') ||
         document.querySelector('.print-ana .nome');
-
       const maleNode =
         document.querySelector('#Dettaglio .sesso.mars') ||
         document.querySelector('.print-ana .sesso.mars');
@@ -2736,91 +2719,64 @@ class _EnciPortalPageState extends State<EnciPortalPage> {
         });
       }
 
-      // --- Strategy 1: named pedigree container ---
-      const pedigreeRoot =
-        document.querySelector('#PedigreeCard') ||
-        document.querySelector('.card.pedigree') ||
-        document.querySelector('.pedigree') ||
-        document.querySelector('[id*="Pedigree"]') ||
-        document.querySelector('[id*="pedigree"]') ||
-        document.querySelector('[class*="pedigree"]');
+      // --- Strategy 0: AngularJS $scope.Pedigree (most reliable) ---
+      try {
+        const scopeEl =
+          document.querySelector('#Dettaglio') ||
+          document.querySelector('[ng-controller]');
+        const scope = scopeEl && typeof angular !== 'undefined'
+          ? angular.element(scopeEl).scope()
+          : null;
+        const p = scope && scope.Pedigree;
 
-      if (pedigreeRoot) {
-        debug.pedigreeFound = true;
-        debug.strategy = 's1';
-        const rows = pedigreeRoot.querySelectorAll('.row');
-        debug.rowCount = rows.length;
-        debug.cellCount = pedigreeRoot.querySelectorAll('.cella').length;
-        rows.forEach((row) => {
-          const cell = row.querySelector('.cella');
-          if (!cell) return;
-          let pedigreeClass = null;
-          for (const cls of Array.from(row.classList)) {
-            if (/^[pm]\d{2,}$/.test(cls)) { pedigreeClass = cls; break; }
+        if (p) {
+          debug.strategy = 'scope';
+          for (let n = 1; n <= 30; n++) {
+            const isPadre = (n % 2 === 1);
+            const loi  = isPadre ? p['LOI_PADRE_'  + n] : p['LOI_MADRE_'  + n];
+            const nome = isPadre ? p['NOME_PADRE_' + n] : p['NOME_MADRE_' + n];
+            if (!loi && !nome) continue;
+            result.push({
+              roleKey: roleFromNumber(n),
+              code: loi  || '',
+              name: nome || '',
+              sex:  isPadre ? 'M' : 'F'
+            });
           }
-          if (!pedigreeClass) return;
-          const num = parseInt(pedigreeClass.substring(1), 10);
-          if (!num || num < 1) return;
-          const sex = pedigreeClass.startsWith('p') ? 'M' : 'F';
-          const { code, name } = extractFromElement(cell);
-          if (!code && !name) return;
-          result.push({ roleKey: roleFromNumber(num), code, name, sex });
-        });
+        }
+      } catch (e) {
+        debug.error = e.toString();
       }
 
-      // --- Strategy 2: .cella elements anywhere in DOM ---
+      // --- Strategy 1: DOM scraping via #PedigreeCard rows ---
       if (result.filter(r => r.roleKey !== 'self').length === 0) {
-        debug.strategy += '+s2';
-        const allCells = document.querySelectorAll('.cella');
-        debug.cellCount = allCells.length;
-        allCells.forEach((cell) => {
-          let el = cell.parentElement;
-          let pedigreeClass = null;
-          while (el && el !== document.body) {
-            for (const cls of Array.from(el.classList)) {
-              if (/^[pm]\d{2,}$/.test(cls)) { pedigreeClass = cls; break; }
+        debug.strategy += '+dom';
+        const pedigreeRoot =
+          document.querySelector('#PedigreeCard') ||
+          document.querySelector('.card.pedigree') ||
+          document.querySelector('[id*="Pedigree"]');
+
+        if (pedigreeRoot) {
+          pedigreeRoot.querySelectorAll('.row').forEach((row) => {
+            const cell = row.querySelector('.cella');
+            if (!cell) return;
+            let pc = null;
+            for (const cls of Array.from(row.classList)) {
+              if (/^[pm]\d{1,}$/.test(cls)) { pc = cls; break; }
             }
-            if (pedigreeClass) break;
-            el = el.parentElement;
-          }
-          if (!pedigreeClass) return;
-          const num = parseInt(pedigreeClass.substring(1), 10);
-          if (!num || num < 1) return;
-          const sex = pedigreeClass.startsWith('p') ? 'M' : 'F';
-          const { code, name } = extractFromElement(cell);
-          if (!code && !name) return;
-          const rk = roleFromNumber(num);
-          if (!result.some(r => r.roleKey === rk)) {
-            result.push({ roleKey: rk, code, name, sex });
-          }
-        });
-      }
-
-      // --- Strategy 3: any element with [pm]XX class anywhere ---
-      if (result.filter(r => r.roleKey !== 'self').length === 0) {
-        debug.strategy += '+s3';
-        document.querySelectorAll('[class]').forEach((el) => {
-          for (const cls of Array.from(el.classList)) {
-            if (/^[pm]\d{2,}$/.test(cls)) {
-              const num = parseInt(cls.substring(1), 10);
-              if (!num || num < 1) return;
-              const sex = cls.startsWith('p') ? 'M' : 'F';
-              const { code, name } = extractFromElement(el);
-              if (!code && !name) return;
-              const rk = roleFromNumber(num);
-              if (!result.some(r => r.roleKey === rk)) {
-                result.push({ roleKey: rk, code, name, sex });
-              }
-              break;
-            }
-          }
-        });
-      }
-
-      // --- Debug: body snippet for diagnosis when nothing found ---
-      if (result.filter(r => r.roleKey !== 'self').length === 0) {
-        const body = document.body ? document.body.innerHTML : '';
-        debug.bodySnippet = body.substring(0, 800);
+            if (!pc) return;
+            const num = parseInt(pc.substring(1), 10);
+            if (!num || num < 1) return;
+            const code = tc(cell, '.codice');
+            const name = tc(cell, '.nome');
+            if (!code && !name) return;
+            result.push({
+              roleKey: roleFromNumber(num),
+              code, name,
+              sex: pc.startsWith('p') ? 'M' : 'F'
+            });
+          });
+        }
       }
 
       return JSON.stringify({ debug, items: result });
