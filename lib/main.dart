@@ -1,7 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:open_file/open_file.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -2554,11 +2558,56 @@ class _EnciPortalPageState extends State<EnciPortalPage> {
 
     controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onNavigationRequest: (NavigationRequest request) {
+            final url = request.url.toLowerCase();
+            if (url.contains('.pdf') || url.contains('/pdf') || url.contains('download')) {
+              _downloadAndOpenFile(request.url);
+              return NavigationDecision.prevent;
+            }
+            return NavigationDecision.navigate;
+          },
+        ),
+      )
       ..loadRequest(
         Uri.parse(
           'https://www.enci.it/libro-genealogico/libro-genealogico-on-line',
         ),
       );
+  }
+
+  Future<void> _downloadAndOpenFile(String url) async {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Download in corso...')),
+    );
+
+    try {
+      final dir = await getTemporaryDirectory();
+      final fileName = url.split('/').last.split('?').first;
+      final savePath = '${dir.path}/${fileName.isNotEmpty ? fileName : 'pedigree.pdf'}';
+
+      await Dio().download(url, savePath);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('File scaricato. Apertura...')),
+      );
+
+      final result = await OpenFile.open(savePath);
+      if (result.type != ResultType.done && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Impossibile aprire il file: ${result.message}')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Errore durante il download: $e')),
+      );
+    }
   }
 
   Future<void> fillSearchField() async {
